@@ -14,12 +14,22 @@ description: 远程文件预览服务。当用户说"预览"、"分享链接"、
 ## 架构
 
 ```
-用户请求 → 检查服务状态 → SCP 上传 → /software/southxs-preview/files/
-                       ↓
+用户请求 → 检查服务状态 → SCP 上传 → SQLite 元数据
+                                ↓
               预览服务(8081) ← NPM(SSL) ← DNS(A记录)
-                       ↓
-              https://preview.你的域名.com/文件路径
+                                ↓
+              https://预览域名.com/f/{random_name}
 ```
+
+## 新增特性（v2）
+
+| 特性 | 说明 |
+|------|------|
+| 🔑 随机文件名 | UUID 命名，防猜测，原文件名不暴露 |
+| 🔒 密码保护 | 上传时指定密码，访问时需输入 |
+| ⏰ 过期清理 | 支持设置 N 天后自动过期，服务器定时清理 |
+| 📋 文件管理 | `/admin/list` 查看所有文件，`/admin/delete/{id}` 删除 |
+| 🚫 上传限流 | 每 IP 每分钟最多 10 次上传 |
 
 ## 工作流程
 
@@ -41,12 +51,53 @@ description: 远程文件预览服务。当用户说"预览"、"分享链接"、
 ### 流程 2：文件上传
 
 ```bash
-python3 scripts/preview_host.py upload /本地路径/文件.txt [子目录]
+python3 scripts/preview_host.py upload /本地路径/文件.txt [子目录] [选项]
 ```
 
-- 自动编码文件名（含下划线、空格等特殊字符）
-- 验证服务器端实际文件名
-- 返回永久 HTTPS 预览链接
+**新增选项：**
+
+| 选项 | 说明 |
+|------|------|
+| `--password 密码` | 设置访问密码（可选） |
+| `--expire-days 天数` | 设置过期天数（可选） |
+| `--no-random-name` | 使用原始文件名（默认随机文件名） |
+
+**示例：**
+
+```bash
+# 普通上传（随机文件名）
+python3 scripts/preview_host.py upload /tmp/readme.md
+
+# 带密码保护
+python3 scripts/preview_host.py upload /tmp/readme.md --password 123456
+
+# 7天后过期
+python3 scripts/preview_host.py upload /tmp/readme.md --expire-days 7
+
+# 密码+过期
+python3 scripts/preview_host.py upload /tmp/readme.md --password 123456 --expire-days 30
+
+# 使用原始文件名
+python3 scripts/preview_host.py upload /tmp/readme.md --no-random-name
+```
+
+### 流程 3：管理操作
+
+```bash
+# 查看所有文件
+python3 scripts/preview_host.py list
+
+# 删除文件（通过 random_name）
+python3 scripts/preview_host.py delete a1b2c3d4e5f6.md
+```
+
+### 流程 4：Web 管理面板
+
+| 页面 | 地址 | 说明 |
+|------|------|------|
+| 文件列表 | `/admin/list` | 查看所有上传文件 |
+| 删除文件 | `/admin/delete/{id}` | 删除指定文件 |
+| 清理过期 | `/admin/cleanup` | 手动触发过期清理 |
 
 ## 支持的预览格式
 
@@ -95,7 +146,7 @@ python3 scripts/preview_host.py upload /本地路径/文件.txt [子目录]
 
 | 变量 | 说明 |
 |------|------|
-| `PREVIEW_SSH_KEY` | SSH 私钥，支持两种格式：文件路径（如 `/path/to/id_rsa`）或原始私钥文本内容（以 `-----BEGIN` 开头） |
+| `PREVIEW_SSH_KEY` | SSH 私钥，支持文件路径或原始私钥文本（以 `-----BEGIN` 开头） |
 | `TENCENTCLOUD_SECRET_ID` | DNSPod API 密钥 ID |
 | `TENCENTCLOUD_SECRET_KEY` | DNSPod API 密钥 Key |
 | `PREVIEW_NPM_URL` | NPM 管理地址（默认 `http://IP:81`） |
@@ -107,7 +158,7 @@ python3 scripts/preview_host.py upload /本地路径/文件.txt [子目录]
 | 脚本 | 用途 |
 |------|------|
 | `scripts/setup.py` | 服务器初始化（首次使用） |
-| `scripts/preview_host.py` | 文件上传与链接生成 |
+| `scripts/preview_host.py` | 文件上传与链接生成、管理操作 |
 | `scripts/preview_server/app.py` | 预览服务源码（aiohttp） |
 | `scripts/preview_server/Dockerfile` | 镜像构建文件 |
 | `scripts/preview_server/docker-compose.yml` | 容器编排 |

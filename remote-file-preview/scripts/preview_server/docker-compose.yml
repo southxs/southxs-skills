@@ -10,4 +10,5 @@ services:
       - ../files:/data/files
     environment:
       - PREVIEW_FILES_DIR=/data/files
+      - PREVIEW_DB_PATH=/data/preview.db
       - PREVIEW_PORT=8081

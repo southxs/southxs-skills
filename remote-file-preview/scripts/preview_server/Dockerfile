@@ -11,6 +11,7 @@ COPY app.py /app/
 EXPOSE 8081
 
 ENV PREVIEW_FILES_DIR=/data/files
+ENV PREVIEW_DB_PATH=/data/preview.db
 ENV PREVIEW_PORT=8081
 
 CMD ["python", "app.py"]
