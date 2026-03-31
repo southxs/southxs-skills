@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  preview:
+    build: .
+    container_name: southxs-preview
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ../files:/data/files
+    environment:
+      - PREVIEW_FILES_DIR=/data/files
+      - PREVIEW_PORT=8081
