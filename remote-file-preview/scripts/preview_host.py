@@ -22,6 +22,7 @@ import argparse
 import importlib.util
 import tempfile
 import time
+import re
 import sqlite3
 from urllib.parse import quote
 
@@ -298,8 +299,12 @@ def upload(local_path, remote_subdir="", expire_days=None, use_timestamp_name=Tr
 
     # 生成时间戳文件名：yyyy-MM-dd_HH-mm-ss_原始文件名
     if use_timestamp_name:
-        ts = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-        timestamp_name = "{}_{}".format(ts, raw_name)
+        ts = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        # 替换文件名中的空格和特殊字符为 -
+        safe_name = re.sub(r'[^\w\.-]', '-', raw_name)
+        safe_name = re.sub(r'-+', '-', safe_name)  # 合并多个 - 为一个
+        safe_name = safe_name.strip('-')           # 去掉首尾 -
+        timestamp_name = "{}-{}".format(ts, safe_name)
     else:
         timestamp_name = raw_name
 
