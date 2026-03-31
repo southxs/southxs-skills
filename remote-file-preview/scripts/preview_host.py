@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Preview Host - 文件上传与预览链接生成
-支持自动检测服务状态、随机文件名、密码保护、过期清理
+支持自动检测服务状态、时间戳命名、过期清理
 
 使用方式：
   python3 preview_host.py upload <本地路径> [子目录] [选项]
@@ -10,9 +10,8 @@ Preview Host - 文件上传与预览链接生成
   python3 preview_host.py delete <random_name>  # 删除文件
 
 选项：
-  --password 密码        设置文件访问密码（可选）
   --expire-days 天数     设置过期天数（可选，不设置则永不过期）
-  --no-random-name      使用原始文件名（默认使用随机文件名）
+  --no-timestamp        使用原始文件名（默认使用时间戳命名）
 """
 import os
 import sys
@@ -219,13 +218,12 @@ def _db_path():
     return "/software/southxs-preview/app/preview/data/preview.db"
 
 
-def _insert_metadata(random_name, original_name, file_path, size, password, expire_days, ip):
+def _insert_metadata(timestamp_name, original_name, file_path, size, expire_days, ip):
     """
     在服务器 SQLite 中插入文件元数据。
     策略：写一个 Python 脚本到远程 /tmp，执行后清理。
     所有数据直接写在脚本里，不通过 shell 传参。
     """
-    pwd_hash = hashlib.sha256(password.encode()).hexdigest() if password else None
     now = int(time.time())
     expire_time = now + expire_days * 86400 if expire_days else None
     fid = str(uuid.uuid4())
@@ -245,11 +243,11 @@ def _insert_metadata(random_name, original_name, file_path, size, password, expi
         "print('OK')\n"
     ) % (
         fid,
-        random_name,
+        timestamp_name,
         original_name.replace("'", "''"),
         file_path.replace("'", "''"),
         size,
-        'NULL' if not pwd_hash else "'" + pwd_hash + "'",
+        'NULL',
         now,
         'NULL' if not expire_time else str(expire_time),
         ip or ''
@@ -281,8 +279,8 @@ def _insert_metadata(random_name, original_name, file_path, size, password, expi
     return ok
 
 
-def upload(local_path, remote_subdir="", password=None, expire_days=None, use_random_name=True):
-    """上传文件/目录，返回预览链接（包含 random_name）"""
+def upload(local_path, remote_subdir="", expire_days=None, use_timestamp_name=True):
+    """上传文件/目录，返回预览链接（包含 timestamp_name）"""
     if not HOST or not SSH_USER:
         print("❌ 缺少必要环境变量: PREVIEW_HOST, PREVIEW_SSH_USER")
         return None
@@ -292,16 +290,16 @@ def upload(local_path, remote_subdir="", password=None, expire_days=None, use_ra
         print("❌ 无效的路径: {}".format(local_path))
         return None
 
-    # 生成随机文件名（保留原始扩展名）
-    if use_random_name:
-        ext = os.path.splitext(raw_name)[1]
-        random_name = uuid.uuid4().hex + ext
+    # 生成时间戳文件名：yyyy-MM-dd_HH-mm-ss_原始文件名
+    if use_timestamp_name:
+        ts = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+        timestamp_name = "{}_{}".format(ts, raw_name)
     else:
-        random_name = raw_name
+        timestamp_name = raw_name
 
     remote_dir = "{}/{}".format(FILE_ROOT, remote_subdir).rstrip("/")
     # 存储容器内路径（app.py 用 FILES_DIR=/data/files）
-    container_path = "/data/files/{}".format(random_name)
+    container_path = "/data/files/{}".format(timestamp_name)
 
     # 限流检查（上传前获取服务器 IP 作为标识）
     remote_ip = HOST
@@ -338,29 +336,24 @@ def upload(local_path, remote_subdir="", password=None, expire_days=None, use_ra
             ssh_cmd("cp -r {}/* {}/ && rm -rf {}".format(tmp_dir, remote_dir, tmp_dir), check=False)
     else:
         r = cmd('scp {} -o StrictHostKeyChecking=no {} {}@{}:{}/{}'.format(
-            key_opt, local_path, SSH_USER, HOST, remote_dir, random_name))
+            key_opt, local_path, SSH_USER, HOST, remote_dir, timestamp_name))
 
     if r is None:
         return None
 
     # 写入元数据
-    _insert_metadata(random_name, raw_name, container_path, local_size, password, expire_days, None)
+    _insert_metadata(timestamp_name, raw_name, container_path, local_size, expire_days, None)
 
     # 生成访问链接
-    # 新格式：/f/{random_name}（受保护访问）
-    url = "{}/f/{}".format(DEFAULT_URL, random_name) if DEFAULT_URL else None
+    url = "{}/f/{}".format(DEFAULT_URL, timestamp_name) if DEFAULT_URL else None
 
     print("✅ 上传成功")
-    if password:
-        print("   🔒 访问密码: {}".format(password))
     if expire_days:
         print("   ⏰ 过期时间: {} 天后".format(expire_days))
     if url:
         print("   预览: {}".format(url))
-        if password:
-            print("   完整访问: {}?pwd={}".format(url, password))
     else:
-        print("   文件已上传到: {}/{}".format(remote_dir, random_name))
+        print("   文件已上传到: {}/{}".format(remote_dir, timestamp_name))
     return url
 
 
@@ -483,12 +476,10 @@ def main():
                         help="操作: upload=上传, status=检查状态, setup=初始化, list=列表, delete=删除")
     parser.add_argument("local", nargs="?", default="", help="本地路径（upload 时用）")
     parser.add_argument("remote", nargs="?", default="", help="远程子目录")
-    parser.add_argument("--password", dest="password", default=None,
-                        help="设置访问密码（可选）")
     parser.add_argument("--expire-days", dest="expire_days", type=int, default=None,
                         help="设置过期天数（可选）")
-    parser.add_argument("--no-random-name", dest="no_random_name", action="store_true",
-                        help="使用原始文件名（默认使用随机文件名）")
+    parser.add_argument("--no-timestamp", dest="no_timestamp", action="store_true",
+                        help="使用原始文件名（默认使用时间戳命名）")
 
     args = parser.parse_args()
 
@@ -525,9 +516,8 @@ def main():
         url = upload(
             args.local,
             args.remote,
-            password=args.password,
             expire_days=args.expire_days,
-            use_random_name=not args.no_random_name
+            use_timestamp_name=not args.no_timestamp
         )
         if url:
             print("\n📎 {}".format(url))

@@ -25,8 +25,7 @@ description: 远程文件预览服务。当用户说"预览"、"分享链接"、
 
 | 特性 | 说明 |
 |------|------|
-| 🔑 随机文件名 | UUID 命名，防猜测，原文件名不暴露 |
-| 🔒 密码保护 | 上传时指定密码，访问时需输入 |
+| 📅 时间戳命名 | `yyyy-MM-dd_HH-mm-ss_原始文件名`，可读性强 |
 | ⏰ 过期清理 | 支持设置 N 天后自动过期，服务器定时清理 |
 | 📋 文件管理 | `/admin/list` 查看所有文件，`/admin/delete/{id}` 删除 |
 | 🚫 上传限流 | 每 IP 每分钟最多 10 次上传 |
@@ -58,27 +57,20 @@ python3 scripts/preview_host.py upload /本地路径/文件.txt [子目录] [选
 
 | 选项 | 说明 |
 |------|------|
-| `--password 密码` | 设置访问密码（可选） |
 | `--expire-days 天数` | 设置过期天数（可选） |
-| `--no-random-name` | 使用原始文件名（默认随机文件名） |
+| `--no-timestamp` | 使用原始文件名（默认时间戳命名） |
 
 **示例：**
 
 ```bash
-# 普通上传（随机文件名）
+# 普通上传（时间戳命名）
 python3 scripts/preview_host.py upload /tmp/readme.md
-
-# 带密码保护
-python3 scripts/preview_host.py upload /tmp/readme.md --password 123456
 
 # 7天后过期
 python3 scripts/preview_host.py upload /tmp/readme.md --expire-days 7
 
-# 密码+过期
-python3 scripts/preview_host.py upload /tmp/readme.md --password 123456 --expire-days 30
-
 # 使用原始文件名
-python3 scripts/preview_host.py upload /tmp/readme.md --no-random-name
+python3 scripts/preview_host.py upload /tmp/readme.md --no-timestamp
 ```
 
 ### 流程 3：管理操作

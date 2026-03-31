@@ -2,7 +2,7 @@
 """
 Preview Server - 远程文件预览服务
 支持：Markdown/代码高亮、图片、文本预览
-支持：随机文件名、密码保护、过期清理
+支持：时间戳命名、过期清理
 """
 import os
 import sqlite3
@@ -56,18 +56,6 @@ def get_db():
 
 
 # ==================== 工具函数 ====================
-
-def hash_password(pwd):
-    if not pwd:
-        return None
-    return hashlib.sha256(pwd.encode()).hexdigest()
-
-
-def verify_password(pwd, stored_hash):
-    if not stored_hash:
-        return True
-    return hashlib.sha256(pwd.encode()).hexdigest() == stored_hash
-
 
 def get_abs_path(path_info):
     clean = unquote(path_info.lstrip('/'))
@@ -181,21 +169,20 @@ async def index(request):
 
 async def file_access(request):
     """
-    访问受保护文件：/f/{random_name} [?pwd=xxx]
+    访问文件：/f/{timestamp_name}
     """
-    random_name = request.match_info.get('random_name', '')
-    pwd = request.query.get('pwd', '')
+    timestamp_name = request.match_info.get('random_name', '')
 
     conn = get_db()
     row = conn.execute(
-        "SELECT * FROM files WHERE random_name = ?", (random_name,)
+        "SELECT * FROM files WHERE random_name = ?", (timestamp_name,)
     ).fetchone()
     conn.close()
 
     if not row:
         return web.Response(text='❌ 文件不存在或已删除', status=404)
 
-    (file_id, random_name, original_name, file_path,
+    (file_id, timestamp_name, original_name, file_path,
      size, password_hash, upload_time, expire_time,
      access_count, ip) = row
 
@@ -203,27 +190,13 @@ async def file_access(request):
     if expire_time and expire_time < int(time.time()):
         return web.Response(text='❌ 链接已过期', status=410)
 
-    # 密码验证
-    if not verify_password(pwd, password_hash):
-        # 返回密码输入页
-        return web.Response(
-            text='<html><head><meta charset="utf-8"><title>输入访问密码</title>'
-                 '<style>body{font-family:-apple-system,sans-serif;max-width:400px;margin:100px auto;padding:20px}'
-                 'input{padding:10px;width:100%;box-sizing:border-box;margin:8px 0;border:1px solid #ddd;border-radius:6px}'
-                 'button{padding:10px 24px;background:#0066cc;color:#fff;border:none;border-radius:6px;cursor:pointer}'
-                 'h2{color:#333}</style></head>'
-                 '<body><h2>🔒 需要密码访问</h2><p>文件: ' + original_name + '</p>'
-                 '<form method="get"><input type="password" name="pwd" placeholder="请输入访问密码" required>'
-                 '<button type="submit">确认</button></form></body></html>',
-            content_type='text/html', charset='utf-8')
-
     abs_path = Path(file_path)
     if not abs_path.exists():
         return web.Response(text='❌ 文件已删除', status=404)
 
     # 更新访问计数
     conn2 = get_db()
-    conn2.execute("UPDATE files SET access_count = access_count + 1 WHERE random_name = ?", (random_name,))
+    conn2.execute("UPDATE files SET access_count = access_count + 1 WHERE random_name = ?", (timestamp_name,))
     conn2.commit()
     conn2.close()
 
@@ -236,7 +209,7 @@ async def admin_list(request):
     """列出所有文件（管理面板）"""
     conn = get_db()
     rows = conn.execute(
-        "SELECT random_name, original_name, size, upload_time, expire_time, access_count, password_hash "
+        "SELECT random_name, original_name, size, upload_time, expire_time, access_count "
         "FROM files ORDER BY upload_time DESC"
     ).fetchall()
     conn.close()
@@ -244,22 +217,20 @@ async def admin_list(request):
     now = int(time.time())
     items = []
     for row in rows:
-        rn, on, size, ut, et, ac, ph = row
+        rn, on, size, ut, et, ac = row
         expire_str = '永不过期' if not et else (
             '已过期' if et < now else '还剩 {}s'.format(et - now))
-        has_pwd = '🔒 是' if ph else '否'
         ut_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ut))
         items.append(
             '<tr><td><a href="/f/' + rn + '">' + on + '</a></td>'
             '<td>' + ut_str + '</td>'
             '<td>' + expire_str + '</td>'
-            '<td>' + has_pwd + '</td>'
             '<td>' + str(ac) + '</td>'
             '<td><a href="/admin/delete/' + rn + '" onclick="return confirm(\'确认删除 ' + on + '？\')">🗑️ 删除</a></td></tr>'
         )
 
     html = ('<html><head><meta charset="utf-8"><title>文件管理</title>'
-            '<style>body{font-family:-apple-system,sans-serif;max-width:1100px;margin:0 auto;padding:20px}'
+            '<style>body{font-family:-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:20px}'
             'table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden}'
             'th,td{padding:12px 16px;border-bottom:1px solid #eee;text-align:left}'
             'th{background:#f6f8fa;font-weight:600}'
@@ -269,9 +240,9 @@ async def admin_list(request):
             '<p style="color:#888">共 {} 个文件 &nbsp;|&nbsp; '
             '<a href="/admin/cleanup">🧹 清理过期文件</a> &nbsp;|&nbsp; '
             '<a href="/">📁 浏览文件</a></p>'
-            '<table><thead><tr><th>文件名</th><th>上传时间</th><th>过期时间</th><th>密码</th><th>访问次数</th><th>操作</th></tr></thead>'
+            '<table><thead><tr><th>文件名</th><th>上传时间</th><th>过期时间</th><th>访问次数</th><th>操作</th></tr></thead>'
             '<tbody>').format(len(items))
-    html += ''.join(items) if items else '<tr><td colspan="6" style="text-align:center;color:#888">暂无文件</td></tr>'
+    html += ''.join(items) if items else '<tr><td colspan="5" style="text-align:center;color:#888">暂无文件</td></tr>'
     html += '</tbody></table></body></html>'
     return web.Response(text=html, content_type='text/html', charset='utf-8')
 
