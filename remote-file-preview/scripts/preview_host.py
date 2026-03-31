@@ -372,16 +372,37 @@ def list_files():
         print("❌ 缺少环境变量")
         return
 
-    print("\n📋 远程文件列表：")
-    print("-" * 80)
-    r = ssh_cmd(
-        'sqlite3 -header -column {} "SELECT random_name, original_name, size, upload_time, expire_time, password_hash FROM files ORDER BY upload_time DESC"'.format(_db_path()),
-        check=False, timeout=15
+    import json
+    script = (
+        "import sqlite3,time\n"
+        "conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')\n"
+        "rows=conn.execute('SELECT random_name,original_name,size,upload_time,expire_time,password_hash FROM files ORDER BY upload_time DESC').fetchall()\n"
+        "print('%-32s %-30s %8s %19s %12s %5s' % ('RANDOM_NAME','ORIGINAL_NAME','SIZE','UPLOAD_TIME','EXPIRE_TIME','PWD'))\n"
+        "for r in rows:\n"
+        " pwd='Y' if r[5] else 'N'\n"
+        " et='-' if not r[4] else time.strftime('%Y-%m-%d %H:%M',time.localtime(r[4]))\n"
+        " ut=time.strftime('%Y-%m-%d %H:%M',time.localtime(r[3]))\n"
+        " print('%-32s %-30s %8d %19s %12s %5s' % (r[0],r[1],r[2] or 0,ut,et,pwd))\n"
     )
-    if not r or r.returncode != 0:
+
+    remote_script = "/tmp/_list_files.py"
+    script_local = "/tmp/_list_files.py"
+    with open(script_local, 'w') as f:
+        f.write(script)
+    key_opt = "-i {}".format(_get_ssh_key_path()) if _get_ssh_key_path() else ""
+    cmd('scp {} -o StrictHostKeyChecking=no {} root@{}:{}'.format(
+        key_opt, script_local, HOST, remote_script), check=False)
+    os.unlink(script_local)
+
+    r = ssh_cmd("python3 {}".format(remote_script), check=False, timeout=15)
+    ssh_cmd("rm -f {}".format(remote_script), check=False)
+
+    print("\n📋 远程文件列表：")
+    print("-" * 100)
+    if r and r.returncode == 0 and r.stdout.strip():
+        print(r.stdout)
+    else:
         print("  （暂无文件）")
-        return
-    print(r.stdout)
 
 
 def delete_file(random_name):
@@ -390,21 +411,55 @@ def delete_file(random_name):
         print("❌ 缺少环境变量")
         return None
 
-    # 查询文件路径
-    r = ssh_cmd(
-        'sqlite3 {} "SELECT file_path FROM files WHERE random_name=\'{}\'"'.format(_db_path(), random_name),
-        check=False, timeout=10
-    )
-    if not r or not r.stdout.strip():
+    # Step 1: 查询文件路径
+    select_script = (
+        "import sqlite3\n"
+        "conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')\n"
+        "row=conn.execute('SELECT file_path FROM files WHERE random_name=?',('%s',)).fetchone()\n"
+        "if row: print(row[0])\n"
+    ) % (random_name,)
+
+    sel_local = "/tmp/_del_sel.py"
+    sel_remote = "/tmp/_del_sel.py"
+    with open(sel_local, 'w') as f:
+        f.write(select_script)
+    key_opt = "-i {}".format(_get_ssh_key_path()) if _get_ssh_key_path() else ""
+    cmd('scp {} -o StrictHostKeyChecking=no {} root@{}:{}'.format(
+        key_opt, sel_local, HOST, sel_remote), check=False)
+    os.unlink(sel_local)
+
+    r = ssh_cmd("python3 {}".format(sel_remote), check=False, timeout=15)
+    ssh_cmd("rm -f {}".format(sel_remote), check=False)
+    file_path = r.stdout.strip() if r and r.returncode == 0 else ""
+
+    if not file_path:
         print("❌ 文件不存在: {}".format(random_name))
         return False
 
-    file_path = r.stdout.strip()
-    # 删除物理文件
-    ssh_cmd("rm -f '{}'".format(file_path), check=False)
-    # 删除元数据
-    ssh_cmd("sqlite3 {} \"DELETE FROM files WHERE random_name='{}'\"".format(_db_path(), random_name), check=False)
-    print("✅ 已删除: {}".format(random_name))
+    # Step 2: 删除物理文件（支持容器内路径和宿主机路径）
+    # 容器内路径 /data/files/xxx 或宿主机路径 /software/southxs-preview/files/xxx
+    container_path = file_path.replace('/software/southxs-preview/files/', '/data/files/')
+    ssh_cmd("docker exec southxs-preview rm -f '{}'".format(container_path), check=False)
+
+    # Step 3: 删除元数据
+    del_script = (
+        "import sqlite3\n"
+        "conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')\n"
+        "conn.execute('DELETE FROM files WHERE random_name=?',('%s',))\n"
+        "conn.commit()\n"
+    ) % (random_name,)
+
+    del_local = "/tmp/_del_meta.py"
+    del_remote = "/tmp/_del_meta.py"
+    with open(del_local, 'w') as f:
+        f.write(del_script)
+    cmd('scp {} -o StrictHostKeyChecking=no {} root@{}:{}'.format(
+        key_opt, del_local, HOST, del_remote), check=False)
+    os.unlink(del_local)
+    ssh_cmd("python3 {}".format(del_remote), check=False, timeout=15)
+    ssh_cmd("rm -f {}".format(del_remote), check=False)
+
+    print("✅ 已删除: {} (文件: {})".format(random_name, file_path))
     return True
 
 
