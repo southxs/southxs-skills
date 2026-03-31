@@ -95,7 +95,7 @@ python3 scripts/preview_host.py upload /本地路径/文件.txt [子目录]
 
 | 变量 | 说明 |
 |------|------|
-| `PREVIEW_SSH_KEY` | SSH 私钥路径（默认 `~/.ssh/id_rsa`） |
+| `PREVIEW_SSH_KEY` | SSH 私钥，支持两种格式：文件路径（如 `/path/to/id_rsa`）或原始私钥文本内容（以 `-----BEGIN` 开头） |
 | `TENCENTCLOUD_SECRET_ID` | DNSPod API 密钥 ID |
 | `TENCENTCLOUD_SECRET_KEY` | DNSPod API 密钥 Key |
 | `PREVIEW_NPM_URL` | NPM 管理地址（默认 `http://IP:81`） |

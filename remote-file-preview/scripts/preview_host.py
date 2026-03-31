@@ -12,6 +12,7 @@ import sys
 import subprocess
 import argparse
 import importlib.util
+import tempfile
 from urllib.parse import quote
 
 # 读取环境变量
@@ -24,6 +25,31 @@ DNSPOD_SUB_DOMAIN = os.environ.get("DNSPOD_SUB_DOMAIN", "preview")
 DEFAULT_URL  = "https://{}.{}".format(
     DNSPOD_SUB_DOMAIN, DNSPOD_DOMAIN) if DNSPOD_DOMAIN else ""
 
+# 凭证状态（避免重复写 temp 文件）
+_ssh_key_path = None
+
+
+def _get_ssh_key_path():
+    """
+    返回 SSH 密钥路径：
+    - 原始密钥文本（含 -----BEGIN）→ 写入 temp 文件，返回路径
+    - 文件路径 → 直接返回
+    """
+    global _ssh_key_path
+    if _ssh_key_path:
+        return _ssh_key_path
+    if not SSH_KEY:
+        return None
+    if SSH_KEY.strip().startswith("-----BEGIN"):
+        fd, path = tempfile.mkstemp(prefix="ssh_key_")
+        os.write(fd, SSH_KEY.encode())
+        os.close(fd)
+        os.chmod(path, 0o600)
+        _ssh_key_path = path
+    else:
+        _ssh_key_path = SSH_KEY
+    return _ssh_key_path
+
 
 def cmd(c, check=True):
     r = subprocess.run(c, shell=True, capture_output=True, text=True, executable="/bin/bash")
@@ -33,7 +59,8 @@ def cmd(c, check=True):
 
 
 def ssh_cmd(c, check=True, timeout=30):
-    key_opt = "-i {}".format(SSH_KEY) if SSH_KEY else ""
+    key_path = _get_ssh_key_path()
+    key_opt = "-i {}".format(key_path) if key_path else ""
     r = subprocess.run(
         "ssh {} -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} {}".format(
             key_opt, SSH_USER, HOST, c.replace('"', '\\"') if '"' in c else c),
@@ -173,7 +200,8 @@ def upload(local_path, remote_subdir=""):
     # 创建目录
     ssh_cmd("mkdir -p {}".format(remote_dir), check=False)
 
-    key_opt = "-i {}".format(SSH_KEY) if SSH_KEY else ""
+    key_path = _get_ssh_key_path()
+    key_opt = "-i {}".format(key_path) if key_path else ""
     if os.path.isdir(local_path):
         r = cmd('rsync -avz -e "ssh {} -o StrictHostKeyChecking=no" {}/ {}@{}:{}/'.format(
             key_opt, local_path, SSH_USER, HOST, remote_dir))

@@ -3,7 +3,7 @@
 Preview Host - 服务器初始化脚本
 阶段：SSH → DNS → 目录 → Docker → NPM → 预览服务 → NPM代理配置
 """
-import os, sys, subprocess, json, time, argparse, urllib.request, hashlib, hmac
+import os, sys, subprocess, json, time, argparse, urllib.request, hashlib, hmac, tempfile
 
 # ------------------ 凭证（环境变量）------------------
 
@@ -18,6 +18,32 @@ DNSPOD_SUB_DOMAIN = os.environ.get("DNSPOD_SUB_DOMAIN", "preview")
 TENCENTCLOUD_SECRET_ID     = os.environ.get("TENCENTCLOUD_SECRET_ID", "")
 TENCENTCLOUD_SECRET_KEY    = os.environ.get("TENCENTCLOUD_SECRET_KEY", "")
 PREVIEW_DOMAIN = "{}.{}".format(DNSPOD_SUB_DOMAIN, DNSPOD_DOMAIN)
+
+# 凭证状态（避免重复写 temp 文件）
+_ssh_key_path = None
+
+
+def _get_ssh_key_path():
+    """
+    返回 SSH 密钥路径：
+    - 原始密钥文本（含 -----BEGIN）→ 写入 temp 文件，返回路径
+    - 文件路径 → 直接返回
+    """
+    global _ssh_key_path
+    if _ssh_key_path:
+        return _ssh_key_path
+    if not SSH_KEY:
+        return None
+    if SSH_KEY.strip().startswith("-----BEGIN"):
+        fd, path = tempfile.mkstemp(prefix="ssh_key_")
+        os.write(fd, SSH_KEY.encode())
+        os.close(fd)
+        os.chmod(path, 0o600)
+        _ssh_key_path = path
+    else:
+        _ssh_key_path = SSH_KEY
+    return _ssh_key_path
+
 
 # NPM 容器名/镜像
 NPM_CONTAINER = "npm"
@@ -35,7 +61,8 @@ def cmd(c, check=True):
     return r
 
 def ssh_cmd(c, check=True, timeout=30):
-    key_opt = "-i {}".format(SSH_KEY) if SSH_KEY else ""
+    key_path = _get_ssh_key_path()
+    key_opt = "-i {}".format(key_path) if key_path else ""
     r = subprocess.run(
         "ssh {} -o StrictHostKeyChecking=no -o ConnectTimeout=10 {}@{} \"{}\"".format(
             key_opt, SSH_USER, HOST, c.replace('"', '\\"') if '"' in c else c
@@ -48,7 +75,8 @@ def ssh_cmd(c, check=True, timeout=30):
     return r
 
 def scp_upload(local_path, remote_path):
-    key_opt = "-i {}".format(SSH_KEY) if SSH_KEY else ""
+    key_path = _get_ssh_key_path()
+    key_opt = "-i {}".format(key_path) if key_path else ""
     return cmd("scp {} -o StrictHostKeyChecking=no -r {} {}@{}:{}".format(
         key_opt, local_path, SSH_USER, HOST, remote_path), check=True)
 
