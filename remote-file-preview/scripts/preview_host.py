@@ -228,23 +228,36 @@ def _insert_metadata(timestamp_name, original_name, file_path, size, expire_days
     expire_time = now + expire_days * 86400 if expire_days else None
     fid = str(uuid.uuid4())
 
-    # 用 repr() 把所有值转成 Python 字面量，直接嵌入 SQL（避免 shell 传参转义问题）
-    def q(v):
-        """将值转为安全的 Python 字符串字面量（用于 SQL 值）"""
-        if v is None:
-            return 'None'
-        return repr(str(v))
-
-    script = """import sqlite3
-conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')
-conn.execute('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, random_name TEXT UNIQUE, original_name TEXT, file_path TEXT, size INTEGER, password_hash TEXT, upload_time INTEGER, expire_time INTEGER, access_count INTEGER DEFAULT 0, ip TEXT)')
-conn.execute('INSERT INTO files (id,random_name,original_name,file_path,size,password_hash,upload_time,expire_time,ip) VALUES ({},{},{},{},{},{},{},{},{})'.format({},{},{},{},{},{},{},{},{}))
-conn.commit()
-print('OK')
-""".format(
-        q(fid), q(timestamp_name), q(original_name), q(file_path), q(size), q(None), q(now), q(expire_time), q(ip or ''),
-        q(fid), q(timestamp_name), q(original_name), q(file_path), q(size), q(None), q(now), q(expire_time), q(ip or '')
+    # 生成 Python 脚本，用 %s 占位符注入 SQL 语句
+    create_sql = (
+        "CREATE TABLE IF NOT EXISTS files ("
+        "id TEXT PRIMARY KEY, random_name TEXT UNIQUE, original_name TEXT, "
+        "file_path TEXT, size INTEGER, password_hash TEXT, upload_time INTEGER, "
+        "expire_time INTEGER, access_count INTEGER DEFAULT 0, ip TEXT)"
     )
+    def esc(v):
+        """SQL 字符串转义：None→NULL，否则单引号包裹并转义内部单引号"""
+        if v is None:
+            return 'NULL'
+        return "'" + str(v).replace("'", "''") + "'"
+    vals = ', '.join([
+        esc(fid), esc(timestamp_name), esc(original_name),
+        esc(file_path), esc(size), 'NULL',  # password_hash
+        esc(now), esc(expire_time), esc(ip or '')
+    ])
+    insert_sql = (
+        "INSERT INTO files "
+        "(id,random_name,original_name,file_path,size,password_hash,upload_time,expire_time,ip) "
+        "VALUES (" + vals + ")"
+    )
+    script = (
+        "import sqlite3\n"
+        "conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')\n"
+        "conn.execute('%s')\n"
+        "conn.execute('%s')\n"
+        "conn.commit()\n"
+        "print('OK')\n"
+    ) % (create_sql.replace("'", "\\'"), insert_sql.replace("'", "\\'"))
 
     remote_script = "/tmp/_ins_{}.py".format(fid[:8])
 
