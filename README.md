@@ -4,7 +4,7 @@ Personal agent skills repository for [southxs](https://github.com/southxs).
 
 ## Skills
 
-- [preview-host](./preview-host/) - 文件预览分享服务
+- [remote-file-preview](./remote-file-preview/) - 远程文件预览服务
 
 ## Structure
 
