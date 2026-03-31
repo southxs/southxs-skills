@@ -345,7 +345,7 @@ def upload(local_path, remote_subdir="", expire_days=None, use_timestamp_name=Tr
     _insert_metadata(timestamp_name, raw_name, container_path, local_size, expire_days, None)
 
     # 生成访问链接
-    url = "{}/f/{}".format(DEFAULT_URL, timestamp_name) if DEFAULT_URL else None
+    url = "{}/{}".format(DEFAULT_URL, timestamp_name) if DEFAULT_URL else None
 
     print("✅ 上传成功")
     if expire_days:
