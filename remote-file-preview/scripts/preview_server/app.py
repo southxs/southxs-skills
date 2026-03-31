@@ -165,7 +165,7 @@ async def index(request):
     return web.Response(text=html, content_type='text/html', charset='utf-8')
 
 
-# ==================== 路由：受保护文件访问 /f/{id} ====================
+# ==================== 路由：文件访问 /{timestamp_name} ====================
 
 async def file_access(request):
     """
@@ -222,7 +222,7 @@ async def admin_list(request):
             '已过期' if et < now else '还剩 {}s'.format(et - now))
         ut_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(ut))
         items.append(
-            '<tr><td><a href="/f/' + rn + '">' + on + '</a></td>'
+            '<tr><td><a href="/' + rn + '">' + on + '</a></td>'
             '<td>' + ut_str + '</td>'
             '<td>' + expire_str + '</td>'
             '<td>' + str(ac) + '</td>'
@@ -301,7 +301,7 @@ except Exception as e:
 # 路由注册
 app.router.add_get('/',          index)
 app.router.add_get('/preview',   index)
-app.router.add_get('/f/{random_name}',  file_access)
+app.router.add_get('/{timestamp_name}',  file_access)
 app.router.add_get('/admin/list',       admin_list)
 app.router.add_get('/admin/delete/{random_name}', admin_delete)
 app.router.add_get('/admin/cleanup',    admin_cleanup)
