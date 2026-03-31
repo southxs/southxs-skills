@@ -288,8 +288,12 @@ def step_npm():
 
     env_opts = ""
     if NPM_USER and NPM_PASS:
-        env_opts = "-e INITIAL_ADMIN_EMAIL={} -e INITIAL_ADMIN_PASSWORD={}".format(
-            NPM_USER, NPM_PASS)
+        # 环境变量只在容器首次启动（数据库为空）时生效
+        # 使用驼峰命名（PR #4836 修复后）
+        env_opts = (
+            "-e initialAdminEmail={} "
+            "-e initialAdminPassword={}"
+        ).format(NPM_USER, NPM_PASS)
 
     npm_cmd = (
         "docker run -d --name {} --restart unless-stopped "
