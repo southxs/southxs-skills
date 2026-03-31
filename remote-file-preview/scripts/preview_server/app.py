@@ -169,7 +169,7 @@ async def index(request):
 
 async def file_access(request):
     """
-    访问文件：/f/{timestamp_name}
+    访问文件：/{timestamp_name}
     """
     timestamp_name = request.match_info.get('random_name', '')
 
