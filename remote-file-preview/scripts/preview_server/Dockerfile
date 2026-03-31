@@ -14,4 +14,6 @@ ENV PREVIEW_FILES_DIR=/data/files
 ENV PREVIEW_DB_PATH=/data/preview.db
 ENV PREVIEW_PORT=8081
 
+RUN mkdir -p /data
+
 CMD ["python", "app.py"]

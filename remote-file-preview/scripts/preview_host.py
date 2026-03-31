@@ -215,45 +215,70 @@ def auto_setup():
 # ------------------ 文件上传 ------------------
 
 def _db_path():
-    return "{}/preview.db".format(FILE_ROOT)
+    # /data/preview.db inside container = /software/southxs-preview/app/preview/data/preview.db on host
+    return "/software/southxs-preview/app/preview/data/preview.db"
 
 
 def _insert_metadata(random_name, original_name, file_path, size, password, expire_days, ip):
-    """在服务器 SQLite 中插入文件元数据"""
+    """
+    在服务器 SQLite 中插入文件元数据。
+    策略：写一个 Python 脚本到远程 /tmp，执行后清理。
+    所有数据直接写在脚本里，不通过 shell 传参。
+    """
     pwd_hash = hashlib.sha256(password.encode()).hexdigest() if password else None
     now = int(time.time())
     expire_time = now + expire_days * 86400 if expire_days else None
     fid = str(uuid.uuid4())
 
-    # 构建 SQL（用 Python 上传到服务器执行，避免 shell 引号转义问题）
-    script_path = "/tmp/_insert_meta_{}.py".format(fid[:8])
-    script = """
-import sqlite3, sys
-conn = sqlite3.connect('{}')
-conn.execute('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, random_name TEXT UNIQUE, original_name TEXT, file_path TEXT, size INTEGER, password_hash TEXT, upload_time INTEGER, expire_time INTEGER, access_count INTEGER DEFAULT 0, ip TEXT)')
-conn.execute('INSERT INTO files (id, random_name, original_name, file_path, size, password_hash, upload_time, expire_time, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ('{}', '{}', '{}', '{}', {}, {}, ?, ?))
-conn.commit()
-conn.close()
-print('OK')
-""".format(
-        _db_path(), fid, random_name,
+    # 将所有数据写成 Python 字面量，直接 embed 到脚本中（避免 shell 传参转义）
+    script = (
+        "import sqlite3\n"
+        "conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')\n"
+        "conn.execute('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY,"
+        "random_name TEXT UNIQUE,original_name TEXT,file_path TEXT,size INTEGER,"
+        "password_hash TEXT,upload_time INTEGER,expire_time INTEGER,"
+        "access_count INTEGER DEFAULT 0,ip TEXT)')\n"
+        "conn.execute('INSERT INTO files (id,random_name,original_name,file_path,size,"
+        "password_hash,upload_time,expire_time,ip) values (?,?,?,?,?,?,?,?,?)',"
+        "('%s','%s','%s','%s',%s,%s,%s,%s,'%s'))\n"
+        "conn.commit()\n"
+        "print('OK')\n"
+    ) % (
+        fid,
+        random_name,
         original_name.replace("'", "''"),
         file_path.replace("'", "''"),
         size,
-        pwd_hash if pwd_hash else None,
+        'NULL' if not pwd_hash else "'" + pwd_hash + "'",
         now,
-        expire_time if expire_time else None,
+        'NULL' if not expire_time else str(expire_time),
         ip or ''
     )
 
-    # 写入临时 Python 脚本
-    ssh_cmd("cat > {} << 'SCRIPT'\n{}\nSCRIPT".format(script_path, script.replace("'", "'\"'\"'")), check=False)
+    remote_script = "/tmp/_ins_{}.py".format(fid[:8])
+
+    # 写脚本到远程（通过本地文件上传）
+    script_local = "/tmp/_ins_{}.py".format(fid[:8])
+    with open(script_local, 'w') as f:
+        f.write(script)
+    key_opt = "-i {}".format(_get_ssh_key_path()) if _get_ssh_key_path() else ""
+    r = cmd('scp {} -o StrictHostKeyChecking=no {} root@{}:{}'.format(
+        key_opt, script_local, HOST, remote_script), check=False)
+    os.unlink(script_local)
+    if r is None or r.returncode != 0:
+        print("   ⚠️  脚本上传失败")
+        return False
+
     # 执行
-    r = ssh_cmd("python3 {}".format(script_path), check=False, timeout=15)
+    r = ssh_cmd("python3 {}".format(remote_script), check=False, timeout=15)
+    ok = r and r.returncode == 0 and 'OK' in r.stdout
+
     # 清理
-    ssh_cmd("rm -f {}".format(script_path), check=False)
-    return r and 'OK' in r.stdout
+    ssh_cmd("rm -f {}".format(remote_script), check=False)
+
+    if not ok:
+        print("   ⚠️  DB 写入失败: {}".format(r.stderr[:100] if r and r.stderr else "unknown"))
+    return ok
 
 
 def upload(local_path, remote_subdir="", password=None, expire_days=None, use_random_name=True):
@@ -275,7 +300,8 @@ def upload(local_path, remote_subdir="", password=None, expire_days=None, use_ra
         random_name = raw_name
 
     remote_dir = "{}/{}".format(FILE_ROOT, remote_subdir).rstrip("/")
-    remote_path = "{}/{}".format(remote_dir, random_name)
+    # 存储容器内路径（app.py 用 FILES_DIR=/data/files）
+    container_path = "/data/files/{}".format(random_name)
 
     # 限流检查（上传前获取服务器 IP 作为标识）
     remote_ip = HOST
@@ -299,19 +325,26 @@ def upload(local_path, remote_subdir="", password=None, expire_days=None, use_ra
     key_path = _get_ssh_key_path()
     key_opt = "-i {}".format(key_path) if key_path else ""
 
-    # 上传
+    # 上传（使用随机文件名）
     if os.path.isdir(local_path):
+        # 目录：先同步到临时位置，再重命名
+        tmp_dir = remote_dir + "/.tmp_" + uuid.uuid4().hex[:8]
+        ssh_cmd("mkdir -p {}".format(tmp_dir), check=False)
         r = cmd('rsync -avz -e "ssh {} -o StrictHostKeyChecking=no" {}/ {}@{}:{}/'.format(
-            key_opt, local_path, SSH_USER, HOST, remote_dir))
+            key_opt, local_path, SSH_USER, HOST, tmp_dir))
+        if r and r.returncode == 0:
+            # 重命名每个文件（保持目录结构，随机文件名）
+            ssh_cmd("cd {} && for f in $(find . -type f); do dir=$(dirname $f | sed 's|^\./||'); bn=$(uuidgen | cut -d'-' -f1)$(echo $f | rev | cut -d'.' -f1 | rev) ; mv \"$f\" \"$dir/$bn\" 2>/dev/null || true; done".format(tmp_dir), check=False)
+            ssh_cmd("cp -r {}/* {}/ && rm -rf {}".format(tmp_dir, remote_dir, tmp_dir), check=False)
     else:
-        r = cmd('scp {} -o StrictHostKeyChecking=no {} {}@{}:{}/'.format(
-            key_opt, local_path, SSH_USER, HOST, remote_dir))
+        r = cmd('scp {} -o StrictHostKeyChecking=no {} {}@{}:{}/{}'.format(
+            key_opt, local_path, SSH_USER, HOST, remote_dir, random_name))
 
     if r is None:
         return None
 
     # 写入元数据
-    _insert_metadata(random_name, raw_name, remote_path, local_size, password, expire_days, None)
+    _insert_metadata(random_name, raw_name, container_path, local_size, password, expire_days, None)
 
     # 生成访问链接
     # 新格式：/f/{random_name}（受保护访问）
