@@ -228,29 +228,22 @@ def _insert_metadata(timestamp_name, original_name, file_path, size, expire_days
     expire_time = now + expire_days * 86400 if expire_days else None
     fid = str(uuid.uuid4())
 
-    # 将所有数据写成 Python 字面量，直接 embed 到脚本中（避免 shell 传参转义）
-    script = (
-        "import sqlite3\n"
-        "conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')\n"
-        "conn.execute('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY,"
-        "random_name TEXT UNIQUE,original_name TEXT,file_path TEXT,size INTEGER,"
-        "password_hash TEXT,upload_time INTEGER,expire_time INTEGER,"
-        "access_count INTEGER DEFAULT 0,ip TEXT)')\n"
-        "conn.execute('INSERT INTO files (id,random_name,original_name,file_path,size,"
-        "password_hash,upload_time,expire_time,ip) values (?,?,?,?,?,?,?,?,?)',"
-        "('%s','%s','%s','%s',%s,%s,%s,%s,'%s'))\n"
-        "conn.commit()\n"
-        "print('OK')\n"
-    ) % (
-        fid,
-        timestamp_name,
-        original_name.replace("'", "''"),
-        file_path.replace("'", "''"),
-        size,
-        'NULL',
-        now,
-        'NULL' if not expire_time else str(expire_time),
-        ip or ''
+    # 用 repr() 把所有值转成 Python 字面量，直接嵌入 SQL（避免 shell 传参转义问题）
+    def q(v):
+        """将值转为安全的 Python 字符串字面量（用于 SQL 值）"""
+        if v is None:
+            return 'None'
+        return repr(str(v))
+
+    script = """import sqlite3
+conn=sqlite3.connect('/software/southxs-preview/app/preview/data/preview.db')
+conn.execute('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, random_name TEXT UNIQUE, original_name TEXT, file_path TEXT, size INTEGER, password_hash TEXT, upload_time INTEGER, expire_time INTEGER, access_count INTEGER DEFAULT 0, ip TEXT)')
+conn.execute('INSERT INTO files (id,random_name,original_name,file_path,size,password_hash,upload_time,expire_time,ip) VALUES ({},{},{},{},{},{},{},{},{})'.format({},{},{},{},{},{},{},{},{}))
+conn.commit()
+print('OK')
+""".format(
+        q(fid), q(timestamp_name), q(original_name), q(file_path), q(size), q(None), q(now), q(expire_time), q(ip or ''),
+        q(fid), q(timestamp_name), q(original_name), q(file_path), q(size), q(None), q(now), q(expire_time), q(ip or '')
     )
 
     remote_script = "/tmp/_ins_{}.py".format(fid[:8])
