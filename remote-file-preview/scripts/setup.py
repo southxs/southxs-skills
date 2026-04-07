@@ -289,10 +289,10 @@ def step_npm():
     env_opts = ""
     if NPM_USER and NPM_PASS:
         # 环境变量只在容器首次启动（数据库为空）时生效
-        # 使用驼峰命名（PR #4836 修复后）
+        # NPM 镜像读取 INITIAL_ADMIN_EMAIL / INITIAL_ADMIN_PASSWORD（大写+下划线）
         env_opts = (
-            "-e initialAdminEmail={} "
-            "-e initialAdminPassword={}"
+            "-e INITIAL_ADMIN_EMAIL={} "
+            "-e INITIAL_ADMIN_PASSWORD={}"
         ).format(NPM_USER, NPM_PASS)
 
     npm_cmd = (
@@ -398,7 +398,9 @@ def step_npm_proxy():
         "provider": "letsencrypt",
         "nice_name": PREVIEW_DOMAIN,
         "domain_names": [PREVIEW_DOMAIN],
-        "meta": {"dns_challenge": False, "letsencrypt_email": NPM_USER}
+        "meta": {},
+        "letsencrypt_email": NPM_USER,
+        "dns_challenge": False
     })
     cert_id = cert.get("id") if cert else None
     if cert_id:
