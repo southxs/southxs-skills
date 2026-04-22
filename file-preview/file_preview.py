@@ -6,7 +6,7 @@
 import os
 import re
 import markdown
-from flask import Flask, send_file, abort, render_template_string, Response, request, jsonify
+from flask import Flask, send_file, abort, render_template_string, Response, request, jsonify, make_response, redirect
 from functools import wraps
 
 app = Flask(__name__)
@@ -26,9 +26,9 @@ AUTH_ENABLED = True  # 设为 False 可禁用鉴权
 import hmac, hashlib, time, base64, json
 
 def generate_token():
-    """生成访问令牌（基于HMAC，有效期24小时）"""
+    """生成访问令牌（基于HMAC，有效期10分钟）"""
     now = int(time.time())
-    expire = now + 24 * 3600  # 24小时有效期
+    expire = now + 10 * 60  # 10分钟有效期
     issued = now
     msg = f"{AUTH_USERNAME}:{issued}:{expire}"
     sig = hmac.new(AUTH_PASSWORD.encode(), msg.encode(), hashlib.sha256).hexdigest()
@@ -47,16 +47,16 @@ def validate_token(token):
         # 验证签名
         expected_sig = hmac.new(AUTH_PASSWORD.encode(), msg.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
-            return False, 0
+            return False, 0, 0
         
         now = time.time()
         remaining = expire - now
         
         if remaining > 0:
-            return True, int(remaining)
-        return False, 0
+            return True, int(remaining), int(expire)
+        return False, 0, 0
     except:
-        return False, 0
+        return False, 0, 0
 
 # ============ 登录页面 ============
 LOGIN_TEMPLATE = """
@@ -103,36 +103,33 @@ LOGIN_TEMPLATE = """
 </html>
 """
 
-# ============ 鉴权装饰器 ============
+# ============ Cookie鉴权装饰器 ============
 def require_auth(f):
-    """登录验证装饰器"""
+    """Cookie验证装饰器"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not AUTH_ENABLED:
             return f(*args, **kwargs)
         
-        # 检查 Authorization Bearer Token
-        auth_header = request.headers.get('Authorization', '')
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]
-            if validate_token(token):
-                return f(*args, **kwargs)
-        
-        # 检查 query string 中的 token
-        token = request.args.get('token', '')
-        if token and validate_token(token):
+        valid, _ = check_auth()
+        if valid:
             return f(*args, **kwargs)
         
-        # 返回登录页面
-        return '<script>window.location.href="/login";</script>', 401
+        # 未登录：重定向到登录页
+        return redirect('/login', 302)
     return decorated_function
 
-def make_login_page(error=None):
-    from flask import render_template_string
-    return render_template_string(LOGIN_TEMPLATE, error=error)
+def check_auth():
+    """检查Cookie中的Token，返回(是否有效, 剩余秒数)"""
+    if not AUTH_ENABLED:
+        return True, 0
+    token = request.cookies.get('fp_token', '')
+    if not token:
+        return False, 0
+    return validate_token(token)[:2]
 
-# 导入 session 和 make_response
-from flask import session, make_response
+def make_login_page(error=None):
+    return render_template_string(LOGIN_TEMPLATE, error=error)
 
 # ============ 安全检查 ============
 def safe_path(path):
@@ -227,6 +224,17 @@ HTML_TEMPLATE = """
             color: var(--text-muted); text-decoration: none;
         }
         .logout-btn:hover { background: var(--hover); }
+        .token-expire {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            padding: 4px 8px;
+            background: var(--hover);
+            border-radius: 4px;
+        }
+        .mobile-nav .token-expire {
+            font-size: 0.7rem;
+            padding: 4px 6px;
+        }
         .sidebar-content { flex: 1; overflow-y: auto; padding: 8px 0; }
         .file-list { list-style: none; }
         .file-item {
@@ -450,6 +458,7 @@ HTML_TEMPLATE = """
         <button onclick="toggleSidebar()">☰</button>
         {% endif %}
         <span class="logo">{{ filename or '📁 文件预览' }}</span>
+        <span class="token-expire" id="tokenExpireMobile"></span>
     </nav>
 
     <!-- 遮罩层 -->
@@ -461,6 +470,7 @@ HTML_TEMPLATE = """
             <button class="toggle-btn" onclick="toggleSidebar()">☰</button>
             <h2>📁 文件浏览</h2>
             <a href="/logout" class="logout-btn" title="退出登录">🚪</a>
+            <span class="token-expire" id="tokenExpire"></span>
             <button class="theme-btn" onclick="toggleTheme()" title="切换主题" id="themeBtn">🌙</button>
         </div>
         <nav class="sidebar-content">
@@ -615,66 +625,79 @@ function closeSidebar() {
     overlay.classList.remove('active');
 }
 
-// Token自动刷新（有效期不足12小时时自动续期）
-function checkAndRefreshToken() {
-    const token = localStorage.getItem('fp_token');
-    if (!token) return;
-    
-    fetch('/refresh_token?token=' + encodeURIComponent(token))
-        .then(r => r.json())
-        .then(data => {
-            if (data.refreshed && data.token) {
-                localStorage.setItem('fp_token', data.token);
-                localStorage.setItem('fp_issued', data.issued);
-                localStorage.setItem('fp_expire', data.expire);
-            }
-        })
-        .catch(() => {});
-}
-
-// 页面加载时检查刷新
+// 点击链接后关闭侧边栏，拦截内部链接用fetch验证
 document.addEventListener('DOMContentLoaded', function() {
-    const links = document.querySelectorAll('.sidebar a');
-    links.forEach(function(link) {
-        link.addEventListener('click', function() {
-            if (window.innerWidth <= 768) {
-                closeSidebar();
-            }
-            checkAndRefreshToken();
-        });
-    });
-    
     // 恢复主题设置
     const saved = localStorage.getItem('theme');
     if (saved === 'dark') {
         document.body.setAttribute('data-theme', 'dark');
-        document.getElementById('themeBtn').textContent = '☀️';
-    }
-    
-    // 恢复登录状态
-    const token = localStorage.getItem('fp_token');
-    if (token) {
-        // 标记已登录，不显示登录页
+        const btn = document.getElementById('themeBtn');
+        if (btn) btn.textContent = '☀️';
     }
     
     // 启动时检查刷新
     checkAndRefreshToken();
 });
 
-// 拦截所有链接点击，注入Token
-document.addEventListener('click', function(e) {
-    const link = e.target.closest('a');
-    if (link && !link.href.includes('/login') && !link.href.includes('/logout')) {
-        const token = localStorage.getItem('fp_token');
-        if (token && !link.href.includes('token=')) {
-            const sep = link.href.includes('?') ? '&' : '?';
-            link.href += sep + 'token=' + encodeURIComponent(token);
+// Token自动刷新（有效期不足5分钟时自动续期10分钟）
+function checkAndRefreshToken() {
+    console.log('checkAndRefreshToken called');
+    fetch('/refresh_token', {credentials: 'include'})
+        .then(r => r.json())
+        .then(data => {
+            console.log('refresh_token response:', data);
+            if (data.refreshed) {
+                localStorage.setItem('fp_expire', data.expire);
+            }
+            if (data.remaining !== undefined) {
+                localStorage.setItem('fp_expire', data.expire);
+                updateTokenDisplay(data.remaining);
+            }
+        })
+        .catch(err => console.error('refresh error:', err));
+}
+
+function updateTokenDisplay(remaining) {
+    console.log('updateTokenDisplay called, remaining:', remaining);
+    const el = document.getElementById('tokenExpire');
+    const mobileEl = document.getElementById('tokenExpireMobile');
+    
+    const minutes = Math.floor(remaining / 60);
+    const seconds = remaining % 60;
+    const text = `🔐 ${minutes}分${seconds}秒`;
+    
+    if (el) {
+        if (remaining < 5 * 60) {
+            el.style.color = '#e94560';
+        } else {
+            el.style.color = '';
+        }
+        el.textContent = text;
+    }
+    
+    if (mobileEl) {
+        if (remaining < 5 * 60) {
+            mobileEl.style.color = '#e94560';
+        } else {
+            mobileEl.style.color = '#888';
+        }
+        mobileEl.textContent = text;
+    }
+}
+
+// 定期更新倒计时
+setInterval(() => {
+    const expire = localStorage.getItem('fp_expire');
+    if (expire) {
+        const remaining = parseInt(expire) - Math.floor(Date.now() / 1000);
+        if (remaining > 0) {
+            updateTokenDisplay(remaining);
         }
     }
-});
+}, 1000);
 
-let currentEnd = {{ end_line }};
-const totalLines = {{ total_lines }};
+let currentEnd = {{ end_line|default(0) }};
+const totalLines = {{ total_lines|default(0) }};
 
 function loadMoreText(filepath) {
     const btn = document.getElementById('loadMoreBtn');
@@ -682,10 +705,7 @@ function loadMoreText(filepath) {
     btn.disabled = true;
     btn.textContent = '加载中...';
     
-    const token = localStorage.getItem('fp_token');
-    const headers = token ? {'Authorization': 'Bearer ' + token} : {};
-    
-    fetch(`/text_chunk/${filepath}?start=${currentEnd}&end=${currentEnd + 500}`, {headers})
+    fetch(`/text_chunk/${filepath}?start=${currentEnd}&end=${currentEnd + 500}`)
         .then(r => r.json())
         .then(data => {
             if (data.error) {
@@ -741,58 +761,52 @@ def login():
     
     if username == AUTH_USERNAME and password == AUTH_PASSWORD:
         token, issued, expire = generate_token()
-        # 返回JS设置localStorage并跳转
-        return f'''
+        # 设置Cookie并重定向，同时设置localStorage供倒计时使用
+        resp = make_response(f'''
         <script>
             localStorage.setItem('fp_token', '{token}');
-            localStorage.setItem('fp_issued', '{issued}');
             localStorage.setItem('fp_expire', '{expire}');
-            window.location.href="/";
+            window.location.href='/';
         </script>
-        '''
+        ''')
+        resp.set_cookie('fp_token', token, max_age=10*60)
+        return resp
     else:
         return make_login_page(error='用户名或密码错误'), 401
 
 # Token刷新接口
 @app.route('/refresh_token')
 def refresh_token():
-    """检查并刷新Token（有效期不足12小时时自动刷新）"""
-    token = request.args.get('token', '')
+    """检查并刷新Token（有效期不足5分钟时自动刷新为10分钟）"""
+    token = request.cookies.get('fp_token', '') or request.args.get('token', '')
     if not token:
         return jsonify({'refreshed': False, 'error': 'no token'}), 401
     
-    valid, remaining = validate_token(token)
+    valid, remaining, expire = validate_token(token)
     if not valid:
         return jsonify({'refreshed': False, 'error': 'invalid token'}), 401
     
-    # 剩余时间少于12小时，自动刷新
-    if remaining < 12 * 3600:
+    # 剩余时间少于5分钟，自动刷新
+    if remaining < 5 * 60:
         new_token, issued, expire = generate_token()
-        return jsonify({
+        resp = jsonify({
             'refreshed': True,
             'token': new_token,
             'issued': issued,
             'expire': expire,
             'remaining': int(expire - time.time())
         })
+        resp.set_cookie('fp_token', new_token, max_age=10*60)
+        return resp
     
-    # Token还有效，返回剩余时间
-    return jsonify({
-        'refreshed': False,
-        'remaining': remaining
-    })
+    return jsonify({'refreshed': False, 'remaining': remaining, 'expire': expire})
 
 # 登出
 @app.route('/logout')
 def logout():
-    return '''
-    <script>
-        localStorage.removeItem('fp_token');
-        localStorage.removeItem('fp_issued');
-        localStorage.removeItem('fp_expire');
-        window.location.href="/login";
-    </script>
-    '''
+    resp = make_response(redirect('/login'))
+    resp.delete_cookie('fp_token')
+    return resp
 
 @app.route('/')
 @require_auth
@@ -878,7 +892,8 @@ def render_home():
     return render_template_string(HTML_TEMPLATE,
         path='', breadcrumb=[], items=items, is_file=False,
         parent_link=None, file_path='', preview_type='', content='', filename='',
-        sidebar_items=sidebar_items, current_path='', is_home=True)
+        sidebar_items=sidebar_items, current_path='', is_home=True,
+        end_line=0, total_lines=0)
 
 # ============ 目录渲染 ============
 def get_file_icon(name, is_dir):
