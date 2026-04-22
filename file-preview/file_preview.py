@@ -26,9 +26,9 @@ AUTH_ENABLED = True  # 设为 False 可禁用鉴权
 import hmac, hashlib, time, base64, json
 
 def generate_token():
-    """生成访问令牌（基于HMAC，有效期10分钟）"""
+    """生成访问令牌（基于HMAC，有效期24小时）"""
     now = int(time.time())
-    expire = now + 10 * 60  # 10分钟有效期
+    expire = now + 24 * 3600  # 24小时有效期
     issued = now
     msg = f"{AUTH_USERNAME}:{issued}:{expire}"
     sig = hmac.new(AUTH_PASSWORD.encode(), msg.encode(), hashlib.sha256).hexdigest()
@@ -154,6 +154,7 @@ HTML_TEMPLATE = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>📁 文件预览</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <style>
         /* 默认白色主题 */
         :root {
@@ -247,9 +248,9 @@ HTML_TEMPLATE = """
         .file-item .icon { font-size: 1rem; }
         .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; }
         .file-item .size { color: var(--text-muted); font-size: 0.75rem; }
-        .file-item .meta { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+        .file-item .meta { display: flex; align-items: center; gap: 12px; margin-left: auto; flex-shrink: 0; }
         .file-item .time { color: var(--text-muted); font-size: 0.7rem; white-space: nowrap; }
-        .file-item .time-item { display: flex; align-items: center; gap: 2px; }
+        .file-item .time-item { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
         .file-item .time-icon { font-size: 0.65rem; opacity: 0.7; }
         .file-item.folder .name { color: var(--primary); font-weight: 500; }
         
@@ -398,8 +399,12 @@ HTML_TEMPLATE = """
             .markdown-body { font-size: 0.9rem; }
             .markdown-body h1 { font-size: 1.3rem; }
             .markdown-body h2 { font-size: 1.15rem; }
-            .file-item { padding: 10px 12px; }
+            .file-item { padding: 10px 12px; flex-wrap: wrap; }
             .file-item .name { font-size: 0.85rem; }
+            .file-item .meta { gap: 6px; }
+            .file-item .time { font-size: 0.65rem; }
+            .file-item .time-item { font-size: 0.65rem; }
+            .file-item .size { display: none; }
         }
         
         /* 移动端顶部栏 */
@@ -662,12 +667,21 @@ function updateTokenDisplay(remaining) {
     const el = document.getElementById('tokenExpire');
     const mobileEl = document.getElementById('tokenExpireMobile');
     
-    const minutes = Math.floor(remaining / 60);
-    const seconds = remaining % 60;
-    const text = `🔐 ${minutes}分${seconds}秒`;
+    let text;
+    if (remaining >= 3600) {
+        const hours = Math.floor(remaining / 3600);
+        const mins = Math.floor((remaining % 3600) / 60);
+        text = `🔐 ${hours}小时${mins}分`;
+    } else if (remaining >= 60) {
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        text = `🔐 ${mins}分${secs}秒`;
+    } else {
+        text = `🔐 ${remaining}秒`;
+    }
     
     if (el) {
-        if (remaining < 5 * 60) {
+        if (remaining < 12 * 3600) {
             el.style.color = '#e94560';
         } else {
             el.style.color = '';
@@ -676,7 +690,7 @@ function updateTokenDisplay(remaining) {
     }
     
     if (mobileEl) {
-        if (remaining < 5 * 60) {
+        if (remaining < 12 * 3600) {
             mobileEl.style.color = '#e94560';
         } else {
             mobileEl.style.color = '#888';
@@ -750,6 +764,15 @@ function toggleTheme() {
 """
 
 # ============ 路由 ============
+# Favicon
+@app.route('/favicon.ico')
+def favicon():
+    import os
+    safe_path = os.path.join(os.path.dirname(__file__), 'favicon.png')
+    if os.path.exists(safe_path):
+        return send_file(safe_path)
+    abort(404)
+
 # 登录页面
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -769,7 +792,7 @@ def login():
             window.location.href='/';
         </script>
         ''')
-        resp.set_cookie('fp_token', token, max_age=10*60)
+        resp.set_cookie('fp_token', token, max_age=24*3600)
         return resp
     else:
         return make_login_page(error='用户名或密码错误'), 401
@@ -786,8 +809,8 @@ def refresh_token():
     if not valid:
         return jsonify({'refreshed': False, 'error': 'invalid token'}), 401
     
-    # 剩余时间少于5分钟，自动刷新
-    if remaining < 5 * 60:
+    # 剩余时间少于12小时，自动刷新
+    if remaining < 12 * 3600:
         new_token, issued, expire = generate_token()
         resp = jsonify({
             'refreshed': True,
@@ -796,7 +819,7 @@ def refresh_token():
             'expire': expire,
             'remaining': int(expire - time.time())
         })
-        resp.set_cookie('fp_token', new_token, max_age=10*60)
+        resp.set_cookie('fp_token', new_token, max_age=24*3600)
         return resp
     
     return jsonify({'refreshed': False, 'remaining': remaining, 'expire': expire})
