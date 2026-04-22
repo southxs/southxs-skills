@@ -10,11 +10,129 @@ from flask import Flask, send_file, abort, render_template_string, Response, req
 from functools import wraps
 
 app = Flask(__name__)
+app.secret_key = 'file-preview-secret-key-2026'  # Session密钥
 
 # ============ 配置 ============
 HOST = "0.0.0.0"
 PORT = 8881
 ALLOWED_DIRS = ['/root', '/software']  # 只允许访问这两个目录
+
+# ============ 鉴权配置 ============
+AUTH_USERNAME = "southxs"  # 用户名
+AUTH_PASSWORD = "southxs2026"  # 密码
+AUTH_ENABLED = True  # 设为 False 可禁用鉴权
+
+# Token配置
+import hmac, hashlib, time, base64, json
+
+def generate_token():
+    """生成访问令牌（基于HMAC，有效期24小时）"""
+    now = int(time.time())
+    expire = now + 24 * 3600  # 24小时有效期
+    issued = now
+    msg = f"{AUTH_USERNAME}:{issued}:{expire}"
+    sig = hmac.new(AUTH_PASSWORD.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    token = base64.b64encode(f"{msg}:{sig}".encode()).decode()
+    return token, issued, expire
+
+def validate_token(token):
+    """验证令牌是否有效，返回(是否有效, 剩余秒数)"""
+    try:
+        decoded = base64.b64decode(token.encode()).decode()
+        parts = decoded.rsplit(':', 1)
+        msg, sig = parts[0], parts[1]
+        fields = msg.split(':')
+        username, issued, expire = fields[0], int(fields[1]), int(fields[2])
+        
+        # 验证签名
+        expected_sig = hmac.new(AUTH_PASSWORD.encode(), msg.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return False, 0
+        
+        now = time.time()
+        remaining = expire - now
+        
+        if remaining > 0:
+            return True, int(remaining)
+        return False, 0
+    except:
+        return False, 0
+
+# ============ 登录页面 ============
+LOGIN_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>🔐 登录 - 文件预览</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; margin: 0; }
+        .login-box { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); width: 340px; }
+        .login-box h1 { text-align: center; color: #333; margin-bottom: 8px; font-size: 1.5rem; }
+        .login-box p { text-align: center; color: #888; margin-bottom: 30px; font-size: 0.9rem; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #555; font-weight: 500; }
+        .form-group input { width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 1rem; box-sizing: border-box; transition: border-color 0.2s; }
+        .form-group input:focus { outline: none; border-color: #e94560; }
+        .error { background: #fff0f0; color: #e94560; padding: 12px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
+        .submit-btn { width: 100%; padding: 14px; background: linear-gradient(135deg, #e94560, #ff6b6b); color: white; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
+        .submit-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(233,69,96,0.4); }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h1>🔐 文件预览</h1>
+        <p>请登录以继续访问</p>
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+        <form method="post">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" name="username" placeholder="请输入用户名" required>
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" name="password" placeholder="请输入密码" required>
+            </div>
+            <button type="submit" class="submit-btn">登 录</button>
+        </form>
+    </div>
+</body>
+</html>
+"""
+
+# ============ 鉴权装饰器 ============
+def require_auth(f):
+    """登录验证装饰器"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not AUTH_ENABLED:
+            return f(*args, **kwargs)
+        
+        # 检查 Authorization Bearer Token
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]
+            if validate_token(token):
+                return f(*args, **kwargs)
+        
+        # 检查 query string 中的 token
+        token = request.args.get('token', '')
+        if token and validate_token(token):
+            return f(*args, **kwargs)
+        
+        # 返回登录页面
+        return '<script>window.location.href="/login";</script>', 401
+    return decorated_function
+
+def make_login_page(error=None):
+    from flask import render_template_string
+    return render_template_string(LOGIN_TEMPLATE, error=error)
+
+# 导入 session 和 make_response
+from flask import session, make_response
 
 # ============ 安全检查 ============
 def safe_path(path):
@@ -102,6 +220,13 @@ HTML_TEMPLATE = """
             padding: 4px 8px; border-radius: 4px;
         }
         .toggle-btn:hover { background: var(--hover); }
+        .logout-btn {
+            background: none; border: 1px solid var(--border);
+            cursor: pointer; font-size: 0.9rem;
+            padding: 4px 8px; border-radius: 4px;
+            color: var(--text-muted); text-decoration: none;
+        }
+        .logout-btn:hover { background: var(--hover); }
         .sidebar-content { flex: 1; overflow-y: auto; padding: 8px 0; }
         .file-list { list-style: none; }
         .file-item {
@@ -335,6 +460,7 @@ HTML_TEMPLATE = """
         <div class="sidebar-header">
             <button class="toggle-btn" onclick="toggleSidebar()">☰</button>
             <h2>📁 文件浏览</h2>
+            <a href="/logout" class="logout-btn" title="退出登录">🚪</a>
             <button class="theme-btn" onclick="toggleTheme()" title="切换主题" id="themeBtn">🌙</button>
         </div>
         <nav class="sidebar-content">
@@ -489,7 +615,24 @@ function closeSidebar() {
     overlay.classList.remove('active');
 }
 
-// 点击链接后关闭侧边栏
+// Token自动刷新（有效期不足12小时时自动续期）
+function checkAndRefreshToken() {
+    const token = localStorage.getItem('fp_token');
+    if (!token) return;
+    
+    fetch('/refresh_token?token=' + encodeURIComponent(token))
+        .then(r => r.json())
+        .then(data => {
+            if (data.refreshed && data.token) {
+                localStorage.setItem('fp_token', data.token);
+                localStorage.setItem('fp_issued', data.issued);
+                localStorage.setItem('fp_expire', data.expire);
+            }
+        })
+        .catch(() => {});
+}
+
+// 页面加载时检查刷新
 document.addEventListener('DOMContentLoaded', function() {
     const links = document.querySelectorAll('.sidebar a');
     links.forEach(function(link) {
@@ -497,6 +640,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (window.innerWidth <= 768) {
                 closeSidebar();
             }
+            checkAndRefreshToken();
         });
     });
     
@@ -505,6 +649,27 @@ document.addEventListener('DOMContentLoaded', function() {
     if (saved === 'dark') {
         document.body.setAttribute('data-theme', 'dark');
         document.getElementById('themeBtn').textContent = '☀️';
+    }
+    
+    // 恢复登录状态
+    const token = localStorage.getItem('fp_token');
+    if (token) {
+        // 标记已登录，不显示登录页
+    }
+    
+    // 启动时检查刷新
+    checkAndRefreshToken();
+});
+
+// 拦截所有链接点击，注入Token
+document.addEventListener('click', function(e) {
+    const link = e.target.closest('a');
+    if (link && !link.href.includes('/login') && !link.href.includes('/logout')) {
+        const token = localStorage.getItem('fp_token');
+        if (token && !link.href.includes('token=')) {
+            const sep = link.href.includes('?') ? '&' : '?';
+            link.href += sep + 'token=' + encodeURIComponent(token);
+        }
     }
 });
 
@@ -517,7 +682,10 @@ function loadMoreText(filepath) {
     btn.disabled = true;
     btn.textContent = '加载中...';
     
-    fetch(`/text_chunk/${filepath}?start=${currentEnd}&end=${currentEnd + 500}`)
+    const token = localStorage.getItem('fp_token');
+    const headers = token ? {'Authorization': 'Bearer ' + token} : {};
+    
+    fetch(`/text_chunk/${filepath}?start=${currentEnd}&end=${currentEnd + 500}`, {headers})
         .then(r => r.json())
         .then(data => {
             if (data.error) {
@@ -562,15 +730,82 @@ function toggleTheme() {
 """
 
 # ============ 路由 ============
+# 登录页面
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        return make_login_page()
+    
+    username = request.form.get('username', '')
+    password = request.form.get('password', '')
+    
+    if username == AUTH_USERNAME and password == AUTH_PASSWORD:
+        token, issued, expire = generate_token()
+        # 返回JS设置localStorage并跳转
+        return f'''
+        <script>
+            localStorage.setItem('fp_token', '{token}');
+            localStorage.setItem('fp_issued', '{issued}');
+            localStorage.setItem('fp_expire', '{expire}');
+            window.location.href="/";
+        </script>
+        '''
+    else:
+        return make_login_page(error='用户名或密码错误'), 401
+
+# Token刷新接口
+@app.route('/refresh_token')
+def refresh_token():
+    """检查并刷新Token（有效期不足12小时时自动刷新）"""
+    token = request.args.get('token', '')
+    if not token:
+        return jsonify({'refreshed': False, 'error': 'no token'}), 401
+    
+    valid, remaining = validate_token(token)
+    if not valid:
+        return jsonify({'refreshed': False, 'error': 'invalid token'}), 401
+    
+    # 剩余时间少于12小时，自动刷新
+    if remaining < 12 * 3600:
+        new_token, issued, expire = generate_token()
+        return jsonify({
+            'refreshed': True,
+            'token': new_token,
+            'issued': issued,
+            'expire': expire,
+            'remaining': int(expire - time.time())
+        })
+    
+    # Token还有效，返回剩余时间
+    return jsonify({
+        'refreshed': False,
+        'remaining': remaining
+    })
+
+# 登出
+@app.route('/logout')
+def logout():
+    return '''
+    <script>
+        localStorage.removeItem('fp_token');
+        localStorage.removeItem('fp_issued');
+        localStorage.removeItem('fp_expire');
+        window.location.href="/login";
+    </script>
+    '''
+
 @app.route('/')
+@require_auth
 def index():
     return render_home()
 
 @app.route('/<path:filepath>')
+@require_auth
 def browse(filepath):
     return render_directory(filepath)
 
 @app.route('/raw<path:filepath>')
+@require_auth
 def raw_file(filepath):
     safe = safe_path(filepath)
     if os.path.isdir(safe):
@@ -578,6 +813,7 @@ def raw_file(filepath):
     return send_file(safe)
 
 @app.route('/text_chunk/<path:filepath>')
+@require_auth
 def text_chunk(filepath):
     """分块获取文本内容，用于大文件预览"""
     from flask import jsonify
